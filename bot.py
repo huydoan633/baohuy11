@@ -1,212 +1,207 @@
-import time
-import asyncio
-import aiohttp
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from keep_alive import keep_alive
+import telebot
+import requests
+import time
+import threading
+from functools import wraps
 
-# Token bot và ID admin
-BOT_TOKEN = "6320148381:AAEKPrT9vs70BLSrmwjQtfwYDprXpGu4s3s"
-ALLOWED_USER_ID = 5736655322
-
-# Danh sách quyền, task quản lý buff
-authorized_users = {ALLOWED_USER_ID}
-task_manager = {}
-
-# Lưu thời gian khởi động bot
-start_time = time.time()
-
-# Hàm tự gửi tin nhắn và xóa sau 50 giây
-async def send_and_delete(update: Update, text: str, parse_mode="Markdown"):
-    if update.message:
-        msg = await update.message.reply_text(text, parse_mode=parse_mode)
-        await asyncio.sleep(50)
-        try:
-            await msg.delete()
-        except:
-            pass
-
-# Hàm /start
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await send_and_delete(update,
-        "👋 Xin chào!\n"
-        "Tôi là bot auto buff TikTok.\n\n"
-        "Các lệnh hỗ trợ:\n"
-        "/treovip <username1> <username2> ... - Auto buff TikTok không giới hạn, mỗi 15 phút 1 lần.\n"
-        "/stopbuff - Dừng buff đang chạy.\n"
-        "/listbuff - Xem danh sách buff đang hoạt động.\n"
-        "/adduser <user_id> - Thêm user được phép dùng bot."
-    )
-
-# Hàm /uptime
-async def uptime(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-
-    if user_id not in authorized_users:
-        await send_and_delete(update, "❗ Bạn không có quyền sử dụng lệnh này.")
-        return
-
-    # Tính toán thời gian uptime
-    uptime_seconds = int(time.time() - start_time)
-    hours = uptime_seconds // 3600
-    minutes = (uptime_seconds % 3600) // 60
-    seconds = uptime_seconds % 60
-
-    uptime_message = f"⏳ Bot đã hoạt động trong: {hours} giờ {minutes} phút {seconds} giây."
-    await send_and_delete(update, uptime_message)
-
-# Hàm buff cho từng username
-async def auto_buff(update: Update, user_id: int, username: str):
-    url = f"https://dichvukey.site/fl.php?username={username}&key=ngocanvip"
-    success_count = 0
-
-    session = aiohttp.ClientSession()  # Tạo session 1 lần
-    try:
-        while True:
-            try:
-                async with session.get(url, timeout=50) as response:
-                    if response.status == 200:
-                        data = await response.text()
-                        success_count += 1
-
-                        message = "✅ Channel: Treo thành công!\n"
-                        if data.strip() == "":
-                            message += "💬 Không có thông báo từ API."
-                        else:
-                            message += f"💬 Kết quả: {data}"
-
-                        await send_and_delete(update, message)
-
-                        if success_count % 10 == 0:
-                            await send_and_delete(update,
-                                f"⭐ Đã buff tổng cộng {success_count} lần cho `@{username}`!"
-                            )
-                        else:
-                            await send_and_delete(update,
-                                "✅ Channel: Treo thành công!\n💬 Không có thông báo từ API."
-                            )
-            except asyncio.TimeoutError:
-                await send_and_delete(update,
-                    "✅ Channel: Treo thành công!\n💬 Không có thông báo từ API."
-                )
-            except Exception:
-                await send_and_delete(update,
-                    "✅ Channel: Treo thành công!\n💬 Không có thông báo từ API."
-                )
-
-            await asyncio.sleep(900)  # 15 phút
-    except asyncio.CancelledError:
-        await send_and_delete(update, f"⛔ Đã dừng buff tự động cho @{username}.")
-    finally:
-        await session.close()  # Đóng session khi dừng
-        if user_id in task_manager and username in task_manager[user_id]:
-            del task_manager[user_id][username]
-            if not task_manager[user_id]:
-                del task_manager[user_id]
-
-# Hàm /treovip
-async def treovip(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-
-    if user_id not in authorized_users:
-        await send_and_delete(update, "❗ Bạn không có quyền sử dụng bot này.")
-        return
-
-    if not context.args:
-        await send_and_delete(update, "⚡ Vui lòng nhập ít nhất 1 username TikTok.\nVí dụ: /treovip baohuydz158 acc2")
-        return
-
-    usernames = context.args  # Không giới hạn số lượng usernames
-
-    if user_id in task_manager:
-        for task in task_manager[user_id].values():
-            if not task.done():
-                task.cancel()
-
-    task_manager[user_id] = {}
-
-    # Tạo task cho tất cả username gửi vào
-    for username in usernames:
-        task = asyncio.create_task(auto_buff(update, user_id, username))
-        task_manager[user_id][username] = task
-
-    await send_and_delete(update,
-        f"⏳ Bắt đầu auto buff cho: {', '.join(usernames)}.\n"
-        "Mỗi 15 phút tự động gửi 1 lần.\n"
-        "Dùng /stopbuff để dừng bất cứ lúc nào."
-    )
-
-# Hàm /stopbuff
-async def stopbuff(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-
-    if user_id not in authorized_users:
-        await send_and_delete(update, "❗ Bạn không có quyền sử dụng lệnh này.")
-        return
-
-    if user_id in task_manager:
-        for task in task_manager[user_id].values():
-            if not task.done():
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-        del task_manager[user_id]
-        await send_and_delete(update, "⛔ Đã dừng toàn bộ buff đang chạy!")
-    else:
-        await send_and_delete(update, "⚡ Hiện tại bạn không có buff nào đang chạy.")
-
-# Hàm /listbuff
-async def listbuff(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-
-    if user_id not in authorized_users:
-        await send_and_delete(update, "❗ Bạn không có quyền xem danh sách.")
-        return
-
-    if user_id not in task_manager or not task_manager[user_id]:
-        await send_and_delete(update, "⚡ Bạn không có buff nào đang hoạt động.")
-        return
-
-    buffing = list(task_manager[user_id].keys())
-    message = "📜 Danh sách username đang buff:\n" + "\n".join(f"- @{u}" for u in buffing)
-    await send_and_delete(update, message)
-
-# Hàm /adduser
-async def adduser(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-
-    if user_id != ALLOWED_USER_ID:
-        await send_and_delete(update, "❗ Bạn không có quyền thêm user.")
-        return
-
-    if not context.args:
-        await send_and_delete(update, "⚡ Vui lòng nhập user_id cần thêm.")
-        return
-
-    try:
-        new_user_id = int(context.args[0])
-        authorized_users.add(new_user_id)
-        await send_and_delete(update, f"✅ Đã thêm user {new_user_id} thành công.")
-    except ValueError:
-        await send_and_delete(update, "❗ User ID không hợp lệ.")
-    except Exception:
-        await send_and_delete(update, "❗ Xảy ra lỗi khi thêm user.")
-
-# Khởi tạo app
-app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-# Đăng ký lệnh
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("uptime", uptime))  # Đăng ký lệnh /uptime
-app.add_handler(CommandHandler("treovip", treovip))
-app.add_handler(CommandHandler("stopbuff", stopbuff))
-app.add_handler(CommandHandler("listbuff", listbuff))
-app.add_handler(CommandHandler("adduser", adduser))
-
-# Giữ bot sống
 keep_alive()
 
+# Token bot Telegram
+TOKEN = "6367532329:AAEuSSv8JuGKzJQD6qI431udTvdq1l25zo0"
+bot = telebot.TeleBot(TOKEN)
+
+# ID nhóm và ID admin
+GROUP_IDS = [-1002221629819, -1002334731264]  # Hai ID nhóm
+ADMIN_ID = 5736655322  # Thay bằng Telegram user_id của bạn
+
+# Cooldown dictionary
+user_cooldowns = {}
+auto_buff_tasks = {}  # Lưu các thread auto buff
+
+# Hàm kiểm tra cooldown
+def is_on_cooldown(user_id, command):
+    now = time.time()
+    key = f"{user_id}_{command}"
+    if key in user_cooldowns:
+        if now - user_cooldowns[key] < 30:
+            return True
+    user_cooldowns[key] = now
+    return False
+
+# Decorator chỉ dùng trong nhóm
+def only_in_group(func):
+    @wraps(func)
+    def wrapper(message):
+        if message.chat.id not in GROUP_IDS:
+            bot.reply_to(message, "❌ Lệnh này chỉ sử dụng được trong nhóm @Baohuydevs được chỉ định.")
+            return
+        return func(message)
+    return wrapper
+
+# Tự động gọi API mỗi 15 phút
+def auto_buff(username, chat_id, user_id):
+    if user_id not in auto_buff_tasks:
+        return  # Đã bị huỷ
+
+    api_url = f"https://dichvukey.site/fl.php?username={username}&key=ngocanvip"
+    try:
+        response = requests.get(api_url, timeout=80)
+        data = response.json()
+        bot.send_message(chat_id, f"✅ Tự động buff cho `@{username}` thành công!\n"
+                                  f"➕ Thêm: {data.get('followers_add', 0)}\n"
+                                  f"💬 {data.get('message', 'Không có')}",
+                         parse_mode="Markdown")
+    except Exception as e:
+        bot.send_message(chat_id, f"❌ Lỗi khi tự động buff: {e}")
+
+    if user_id in auto_buff_tasks:
+        task = threading.Timer(900, auto_buff, args=[username, chat_id, user_id])
+        auto_buff_tasks[user_id] = task
+        task.start()
+
+# Lệnh /start
+@bot.message_handler(commands=['start'])
+@only_in_group
+def send_welcome(message):
+    bot.reply_to(message,
+        "Xin chào!\n"
+        "Sử dụng các lệnh sau để kiểm tra tài khoản TikTok:\n\n"
+        "`/buff <username>` - Kiểm tra bằng API 2\n"
+        "`/fl3 <username>` - Kiểm tra bằng API 3 (Soundcast)\n"
+        "`/treo <username>` - Tự động buff mỗi 15 phút (chỉ admin)\n"
+        "`/huytreo` - Huỷ treo\n\n"
+        "Ví dụ: `/buff baohuydz158`, `/treo baohuydz158`",
+        parse_mode="Markdown"
+    )
+
+# Lệnh /buff
+@bot.message_handler(commands=['buff'])
+@only_in_group
+def handle_buff(message):
+    if is_on_cooldown(message.from_user.id, 'buff'):
+        bot.reply_to(message, "⏳ Vui lòng đợi 30 giây trước khi dùng lại lệnh này.")
+        return
+
+    parts = message.text.strip().split()
+    if len(parts) < 2:
+        bot.reply_to(message, "❌ Vui lòng cung cấp tên người dùng TikTok. Ví dụ: `/buff baohuydz158`", parse_mode="Markdown")
+        return
+    username = parts[1].lstrip("@")
+
+    bot.send_chat_action(message.chat.id, "typing")
+    time.sleep(1)
+    bot.reply_to(message, f"🔍 Đang kiểm tra `@{username}` bằng API 2...", parse_mode="Markdown")
+
+    api_url = f"https://dichvukey.site/fl.php?username={username}&key=ngocanvip"
+
+    try:
+        response = requests.get(api_url, timeout=80)
+        response.raise_for_status()
+        data = response.json()
+    except requests.exceptions.RequestException:
+        bot.reply_to(message, "❌ Lỗi khi kết nối với API. Vui lòng thử lại sau.")
+        return
+    except ValueError:
+        bot.reply_to(message, f"✅Thông báo: {response.text.strip()}")
+        return
+
+    if str(data.get("status", "")).lower() not in ["true", "1", "success"]:
+        bot.reply_to(message, f"✅Thông báo: {data.get('message', 'Tăng Thành công')}")
+        return
+
+    reply_text = (
+        f"✅ *Thông tin tài khoản (API 2):*\n\n"
+        f"💬 *Thông báo:* {data.get('message', 'Không có')}\n"
+        f"👥 *Followers Trước:* {data.get('followers_before', 0)}\n"
+        f"👥 *Followers Sau:* {data.get('followers_after', 0)}\n"
+        f"✨ *Đã thêm:* {data.get('followers_add', 0)}\n\n"
+        f"🔍 *Trạng thái:* ✅"
+    )
+    bot.reply_to(message, reply_text, parse_mode="Markdown", disable_web_page_preview=True)
+
+# Lệnh /fl3 (ĐÃ THAY API)
+@bot.message_handler(commands=['fl3'])
+@only_in_group
+def handle_fl3(message):
+    if is_on_cooldown(message.from_user.id, 'fl3'):
+        bot.reply_to(message, "⏳ Vui lòng đợi 30 giây trước khi dùng lại lệnh này.")
+        return
+
+    parts = message.text.strip().split()
+    if len(parts) < 2:
+        bot.reply_to(message, "❌ Vui lòng cung cấp tên người dùng TikTok. Ví dụ: `/fl3 ngocanvip`", parse_mode="Markdown")
+        return
+    username = parts[1].lstrip("@")
+
+    bot.send_chat_action(message.chat.id, "typing")
+    time.sleep(1)
+    bot.reply_to(message, f"🔍 Đang kiểm tra `@{username}` bằng API 3...", parse_mode="Markdown")
+
+    api_url = f"https://nvp310107.x10.mx/fltik.php?username={username}&key=30T42025VN"
+
+    try:
+        response = requests.get(api_url, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+    except requests.exceptions.RequestException:
+        bot.reply_to(message, "❌ Lỗi khi kết nối với API 3. Vui lòng thử lại sau.")
+        return
+    except ValueError:
+        bot.reply_to(message, f"✅Thông báo: {response.text.strip()}")
+        return
+
+    reply_text = (
+        f"✅ *Thông tin tài khoản (API 3):*\n\n"
+        f"💬 *Thông báo:* {data.get('message', 'Không có')}\n"
+        f"👥 *Followers Trước:* {data.get('followers_before', 'N/A')}\n"
+        f"👥 *Followers Sau:* {data.get('followers_after', 'N/A')}\n"
+        f"✨ *Đã thêm:* {data.get('followers_add', 'N/A')}\n\n"
+        f"🔍 *Trạng thái:* {data.get('status', 'Không rõ')}"
+    )
+    bot.reply_to(message, reply_text, parse_mode="Markdown", disable_web_page_preview=True)
+
+# Lệnh /treo (chỉ admin)
+@bot.message_handler(commands=['treo'])
+@only_in_group
+def handle_treo(message):
+    if message.from_user.id != ADMIN_ID:
+        bot.reply_to(message, "❌ Lệnh này chỉ admin được phép sử dụng.")
+        return
+
+    parts = message.text.strip().split()
+    if len(parts) < 2:
+        bot.reply_to(message, "❌ Vui lòng cung cấp username TikTok. Ví dụ: `/treo baohuydz158`", parse_mode="Markdown")
+        return
+
+    username = parts[1].lstrip("@")
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+
+    if user_id in auto_buff_tasks:
+        bot.reply_to(message, "⚠️ Đang treo rồi. Muốn treo khác thì dùng `/huytreo` trước.")
+        return
+
+    bot.reply_to(message, f"✅ Đã bắt đầu tự động buff `@{username}` mỗi 15 phút.", parse_mode="Markdown")
+    auto_buff_tasks[user_id] = None
+    auto_buff(username, chat_id, user_id)
+
+# Lệnh /huytreo (chỉ admin)
+@bot.message_handler(commands=['huytreo'])
+@only_in_group
+def handle_huytreo(message):
+    if message.from_user.id != ADMIN_ID:
+        bot.reply_to(message, "❌ Lệnh này chỉ admin được phép sử dụng.")
+        return
+
+    user_id = message.from_user.id
+    task = auto_buff_tasks.pop(user_id, None)
+    if task:
+        task.cancel()
+
+    bot.reply_to(message, "✅ Đã dừng tự động buff.")
+
 # Chạy bot
-app.run_polling()
+if __name__ == "__main__":
+    print("Bot đang chạy trên Render...")
+    bot.infinity_polling()
